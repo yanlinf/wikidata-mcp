@@ -6,9 +6,6 @@ import aiohttp
 mcp = FastMCP("wikidata")
 
 @mcp.tool()
-
-
-
 async def run_sparql(query: str) -> dict:
     """Invoke SPARQL query asynchronously on Wikidata.
 
@@ -18,6 +15,7 @@ async def run_sparql(query: str) -> dict:
     Returns:
         dict: The JSON response from the Wikidata SPARQL endpoint
     """
+    # return {"result": "test"}
     # Define the endpoint URL for Wikidata's SPARQL endpoint
     endpoint_url = "https://query.wikidata.org/sparql"
     
@@ -42,5 +40,14 @@ async def run_sparql(query: str) -> dict:
                 return None
 
 if __name__ == "__main__":
+    # sparql = """
+    # SELECT ?item ?itemLabel WHERE {
+    #     ?item wdt:P31 wd:Q5.
+    #     SERVICE wikibase:label { bd:serviceParam wikibase:language "[AUTO_LANGUAGE],en". }
+    # } LIMIT 10
+    # """
+    # response = asyncio.run(run_sparql(sparql))
+    # print(response)
+
     # Initialize and run the server
     mcp.run(transport='stdio')
