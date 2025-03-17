@@ -2,3 +2,4 @@ mcp[cli]
 aiohttp
 anthropic
 dotenv
+openai

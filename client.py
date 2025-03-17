@@ -7,6 +7,8 @@ from mcp.client.stdio import stdio_client
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
+import json
 
 load_dotenv()  # load environment variables from .env
 
@@ -16,6 +18,24 @@ class MCPClient:
         self.session: Optional[ClientSession] = None
         self.exit_stack = AsyncExitStack()
         self.anthropic = Anthropic()
+        self.system_prompt = """
+            You are a helpful assistant, and you will try your best to help the user.
+            You won't give up on the first try, and you will be creative on solving the user's problem.
+            When the first thing you tried fails, you should come up with alternatives.
+            Before and after you do anything, make sure to thing about it first.
+
+            <think>think about the situation</think>
+            before doing anything think the situation.
+
+            <action>what you should do</action>
+            once fully reasoned about the situation, execute accordingly.
+
+            <reflect>reflect on what you did and the result of your action</reflect>
+            everytime you do something, always reflect on the result of your action, is it what you expected? If not, always think about what else you could have done.
+
+            continue the cycle until completion.
+            """
+        self.messages = []
 
     async def connect_to_server(self, server_script_path: str):
         """Connect to an MCP server
@@ -46,14 +66,15 @@ class MCPClient:
         tools = response.tools
         print("\nConnected to server with tools:", [tool.name for tool in tools])
 
-    async def process_query(self, query: str) -> str:
+    async def process_query_claude(self, query: str) -> str:
+        print("process query using Claude")
         """Process a query using Claude and available tools"""
-        messages = [
+        self.messages.append(
             {
                 "role": "user",
                 "content": query
             }
-        ]
+        )
 
         response = await self.session.list_tools()
         available_tools = [{ 
@@ -66,7 +87,8 @@ class MCPClient:
         response = self.anthropic.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=1000,
-            messages=messages,
+            system=self.system_prompt,
+            messages=self.messages,
             tools=available_tools
         )
 
@@ -86,11 +108,11 @@ class MCPClient:
 
                 # Continue conversation with tool results
                 if hasattr(content, 'text') and content.text:
-                    messages.append({
+                    self.messages.append({
                       "role": "assistant",
                       "content": content.text
                     })
-                messages.append({
+                self.messages.append({
                     "role": "user", 
                     "content": result.content
                 })
@@ -98,13 +120,95 @@ class MCPClient:
                 # Get next response from Claude
                 response = self.anthropic.messages.create(
                     model="claude-3-7-sonnet-20250219",
-                    max_tokens=1000,
-                    messages=messages,
+                    max_tokens=10000,
+                    messages=self.messages,
                 )
 
                 final_text.append(response.content[0].text)
 
         return "\n".join(final_text)
+
+
+
+    async def process_query_gpt(self, query: str) -> str:
+        print("Process query using GPT")
+        """Process a query using OpenAI and available tools"""
+        if not self.messages:
+            self.messages.append({
+                "role": "system",
+                "content": self.system_prompt
+            })
+        self.messages.append(
+            {
+                "role": "user", 
+                "content": query
+            }
+        )
+        response = await self.session.list_tools()
+        available_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema,
+                },
+            }
+            for tool in response.tools
+        ]
+
+        client = AsyncOpenAI()
+
+        # Initial OpenAI API call
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=self.messages,
+            tools=available_tools,
+            tool_choice="auto",
+        )
+
+        final_text = []
+
+        message = response.choices[0].message
+        
+        while True:
+            if message.content:
+                final_text.append(message.content)
+            if message.tool_calls:
+                for tool_call in message.tool_calls:
+                    tool_name = tool_call.function.name
+                    tool_args = tool_call.function.arguments
+
+                    # Ensure tool_args is a dictionary
+                    if isinstance(tool_args, str):
+                        tool_args = json.loads(tool_args)
+
+                    # Execute tool call
+                    result = await self.session.call_tool(tool_name, tool_args)
+                    final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
+
+                    # Continue conversation with tool results
+                    self.messages.append(message)
+                    self.messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": result.content,
+                        }
+                    )
+
+                response = await client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=self.messages,
+                    tools=available_tools,
+                    tool_choice="auto",
+                )
+                message = response.choices[0].message
+            else:
+                break
+
+        return "\n".join(final_text)
+
 
     async def chat_loop(self):
         """Run an interactive chat loop"""
@@ -118,7 +222,7 @@ class MCPClient:
                 if query.lower() == 'quit':
                     break
                     
-                response = await self.process_query(query)
+                response = await self.process_query_claude(query)
                 print("\n" + response)
                     
             except Exception as e:
